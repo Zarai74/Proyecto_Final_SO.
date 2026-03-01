@@ -1,0 +1,124 @@
+#include <stdio.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#pragma comment(lib,"ws2_32.lib")
+
+#define MIDDLEWARE_PORT 8080
+#define SERVER_IP "10.73.134.94"
+#define BUFFER_SIZE 1024
+#define NUM_SERVERS 3
+
+int main() {
+
+    WSADATA wsa;
+    SOCKET middleware_socket, client_socket;
+    SOCKET server_sockets[NUM_SERVERS];
+
+    struct sockaddr_in middleware_addr, client_addr, server_addr;
+
+    int client_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
+    int bytes;
+
+    // Puertos servidores
+    int server_ports[NUM_SERVERS] = {5001, 5002, 5003};
+
+    int current_server = 0;
+
+    // ===== Inicializar Winsock =====
+    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0){
+        printf("Error iniciando Winsock\n");
+        return 1;
+    }
+
+    // ===== Crear socket del middleware =====
+    middleware_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    middleware_addr.sin_family = AF_INET;
+    middleware_addr.sin_port = htons(MIDDLEWARE_PORT);
+    middleware_addr.sin_addr.s_addr = INADDR_ANY;
+
+    bind(middleware_socket, (struct sockaddr*)&middleware_addr, sizeof(middleware_addr));
+    listen(middleware_socket, 5);
+
+    printf("Middleware activo... esperando cliente...\n");
+
+    // ===== Esperar cliente =====
+    client_socket = accept(middleware_socket, (struct sockaddr*)&client_addr, &client_len);
+    printf("Cliente conectado\n");
+
+    // ===== Conectar a TODOS los servidores =====
+    for(int i=0; i<NUM_SERVERS; i++){
+
+        server_sockets[i] = socket(AF_INET, SOCK_STREAM, 0);
+
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(server_ports[i]);
+        server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+
+        if(connect(server_sockets[i], (struct sockaddr*)&server_addr, sizeof(server_addr)) == 0){
+            printf("Conectado al servidor puerto %d\n", server_ports[i]);
+        }
+        else{
+            printf("Error conectando al servidor puerto %d\n", server_ports[i]);
+            continue;
+        }
+    }
+
+    printf("Middleware listo para reenviar mensajes\n\n");
+
+    // ===== Comunicación continua =====
+    while(1){
+
+        // ---- Recibir del cliente ----
+        bytes = recv(client_socket, buffer, BUFFER_SIZE-1, 0);
+
+        if(bytes <= 0){
+            printf("Cliente desconectado\n");
+            break;
+        }
+
+        buffer[bytes] = '\0';
+
+        printf("\nCliente dice: %s\n", buffer);
+
+        // ---- Seleccionar servidor (Round Robin) ----
+        SOCKET selected_server = server_sockets[current_server];
+
+        printf("Enviando al servidor puerto %d\n", server_ports[current_server]);
+
+        // Cambiar al siguiente servidor
+        current_server = (current_server + 1) % NUM_SERVERS;
+
+        // ---- Enviar al servidor ----
+        send(selected_server, buffer, bytes, 0);
+
+        // ---- Recibir respuesta del servidor ----
+        bytes = recv(selected_server, buffer, BUFFER_SIZE-1, 0);
+
+        if(bytes <= 0){
+            printf("Servidor desconectado\n");
+            break;
+        }
+
+        buffer[bytes] = '\0';
+
+        printf("Servidor responde: %s\n", buffer);
+
+        // ---- Regresar respuesta al cliente ----
+        send(client_socket, buffer, bytes, 0);
+    }
+
+    // ===== Cerrar conexiones =====
+    closesocket(client_socket);
+
+    for(int i=0; i<NUM_SERVERS; i++){
+        closesocket(server_sockets[i]);
+    }
+
+    closesocket(middleware_socket);
+    WSACleanup();
+
+    return 0;
+}
